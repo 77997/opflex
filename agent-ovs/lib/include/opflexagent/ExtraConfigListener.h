@@ -69,6 +69,12 @@ public:
      */
     virtual void outOfBandConfigUpdated(std::shared_ptr<OutOfBandConfigSpec> &oobSptr) = 0;
 
+    /**
+     * Called when per-SG logging config changes.
+     * Triggers SG flow recalculation in AccessFlowManager.
+     */
+    virtual void securityGroupLoggingUpdated() {};
+
 };
 
 } /* namespace opflexagent */
