@@ -333,11 +333,23 @@ endif
 if ENABLE_GPROF
   librenderer_openvswitch_la_CXXFLAGS += -pg
 endif
+# NOTE: -lunbound and -lcap-ng are Open vSwitch's dependencies, not ours - it
+# calls ub_* from its DNS resolver and capng_* when it drops capabilities. OVS
+# ships as a static library, so those live in Libs.private of its .pc file and
+# PKG_CHECK_MODULES, which runs "pkg-config --libs" rather than "--static
+# --libs", never puts them on the link line. The renderer is built as
+# "-module -shared" without -Wl,--no-undefined (it must be: it legitimately
+# resolves hundreds of opflexagent::* symbols from the executable at dlopen),
+# so the linker accepts the dangling ub_*/capng_* references silently and the
+# plugin only fails when an agent tries to load it. Naming them explicitly is
+# what keeps that failure at build time.
   librenderer_openvswitch_la_LIBADD = \
 	$(libopflex_LIBS) \
 	$(libmodelgbp_LIBS) \
 	$(libopenvswitch_LIBS) \
 	$(libofproto_LIBS) \
+	-lunbound \
+	-lcap-ng \
 	$(BOOST_SYSTEM_LIB) \
 	$(BOOST_FILESYSTEM_LIB) \
 	$(BOOST_ASIO_LIB) \
