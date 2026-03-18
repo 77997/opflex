@@ -23,6 +23,7 @@
 
 #include <list>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 
 namespace opflexagent {
@@ -74,6 +75,40 @@ public:
      * @return whether spec was found
      */
     bool getPacketDropPruneSpec(const std::string &pruneFilter, std::shared_ptr<PacketDropLogPruneSpec> &pruneSpec);
+
+    /**
+     * Check if per-SG logging is enabled for a given security group URI.
+     *
+     * @param sgURI the security group URI
+     * @return true if logging is enabled for this SG
+     */
+    bool isSgLogEnabled(const opflex::modb::URI& sgURI);
+
+    /**
+     * Check if permit-action logging is enabled for SG log.
+     * @return true if permit logging is enabled
+     */
+    bool isSgLogPermitsEnabled();
+
+    /**
+     * Check if drop-action logging is enabled for SG log.
+     * @return true if drop logging is enabled
+     */
+    bool isSgLogDropsEnabled();
+
+    /**
+     * Get the configured rate limit for SG logging (packets/sec).
+     * 0 means unlimited.
+     * @return rate limit value
+     */
+    uint32_t getSgLogRateLimit();
+
+    /**
+     * Get the configured burst limit for SG logging.
+     * 0 means unlimited.
+     * @return burst limit value
+     */
+    uint32_t getSgLogBurstLimit();
 
 private:
     opflex::ofcore::OFFramework& framework;
@@ -176,6 +211,19 @@ private:
 
     std::mutex prune_mutex;
     drop_prune_map_t dropPruneMap;
+
+    std::mutex sg_log_mutex;
+    std::unordered_set<opflex::modb::URI> logEnabledSgs;
+    bool sgLogPermits{true};
+    bool sgLogDrops{true};
+    uint32_t sgLogRateLimit{0};
+    uint32_t sgLogBurstLimit{0};
+
+    void sgLogConfigUpdated(
+        const std::unordered_set<opflex::modb::URI>& sgUris,
+        bool logPermits = true, bool logDrops = true,
+        uint32_t rateLimit = 0, uint32_t burstLimit = 0);
+
     /**
      * The extraConfig listeners that have been registered
      */
@@ -183,6 +231,7 @@ private:
     std::mutex listener_mutex;
 
     void notifyListeners(const opflex::modb::URI& uuid);
+    void notifySgLogConfigListeners();
 
     friend class FSRDConfigSource;
     friend class FSPacketDropLogConfigSource;

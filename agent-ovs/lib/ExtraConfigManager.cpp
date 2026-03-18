@@ -300,4 +300,51 @@ bool ExtraConfigManager::getPacketDropPruneSpec(const std::string &pruneFilter, 
     return ret;
 }
 
+bool ExtraConfigManager::isSgLogEnabled(const opflex::modb::URI& sgURI) {
+    unique_lock<mutex> guard(sg_log_mutex);
+    return logEnabledSgs.count(sgURI) > 0;
+}
+
+bool ExtraConfigManager::isSgLogPermitsEnabled() {
+    unique_lock<mutex> guard(sg_log_mutex);
+    return sgLogPermits;
+}
+
+bool ExtraConfigManager::isSgLogDropsEnabled() {
+    unique_lock<mutex> guard(sg_log_mutex);
+    return sgLogDrops;
+}
+
+uint32_t ExtraConfigManager::getSgLogRateLimit() {
+    unique_lock<mutex> guard(sg_log_mutex);
+    return sgLogRateLimit;
+}
+
+uint32_t ExtraConfigManager::getSgLogBurstLimit() {
+    unique_lock<mutex> guard(sg_log_mutex);
+    return sgLogBurstLimit;
+}
+
+void ExtraConfigManager::sgLogConfigUpdated(
+        const std::unordered_set<opflex::modb::URI>& sgUris,
+        bool logPermits, bool logDrops,
+        uint32_t rateLimit, uint32_t burstLimit) {
+    {
+        unique_lock<mutex> guard(sg_log_mutex);
+        logEnabledSgs = sgUris;
+        sgLogPermits = logPermits;
+        sgLogDrops = logDrops;
+        sgLogRateLimit = rateLimit;
+        sgLogBurstLimit = burstLimit;
+    }
+    notifySgLogConfigListeners();
+}
+
+void ExtraConfigManager::notifySgLogConfigListeners() {
+    unique_lock<mutex> guard(listener_mutex);
+    for (ExtraConfigListener* listener : extraConfigListeners) {
+        listener->securityGroupLoggingUpdated();
+    }
+}
+
 } /* namespace opflexagent */

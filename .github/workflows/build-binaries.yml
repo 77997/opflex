@@ -1,0 +1,216 @@
+name: Build OpFlex Binaries
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  OVS_VERSION: '3.5.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, ppc64le]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Cache OpFlex binaries
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: opflex-binaries
+          key: opflex-${{ matrix.arch }}-${{ github.sha }}-ovs${{ env.OVS_VERSION }}
+
+      - name: Set up QEMU
+        if: steps.cache.outputs.cache-hit != 'true' && matrix.arch == 'ppc64le'
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: linux/ppc64le
+
+      - name: Build OpFlex for ${{ matrix.arch }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p opflex-binaries
+          docker run --rm \
+            -v "${{ github.workspace }}:/src:ro" \
+            -v "${{ github.workspace }}/opflex-binaries:/output" \
+            debian:trixie \
+            bash -c '
+              set -ex
+              OVS_VERSION=${{ env.OVS_VERSION }}
+              ARCH=${{ matrix.arch }}
+
+              if [ "${ARCH}" = "ppc64le" ]; then
+                dpkg --add-architecture ppc64el
+                apt-get update && apt-get install -y --no-install-recommends \
+                  build-essential crossbuild-essential-ppc64el \
+                  autoconf automake libtool pkg-config cmake git ca-certificates \
+                  default-jdk maven python3 \
+                  libboost-dev libboost-system-dev libboost-filesystem-dev \
+                  libboost-program-options-dev libboost-iostreams-dev \
+                  libboost-test-dev libboost-date-time-dev \
+                  libuv1-dev rapidjson-dev libssl-dev zlib1g-dev \
+                  libunbound-dev libcap-ng-dev \
+                  libboost-dev:ppc64el libboost-system-dev:ppc64el \
+                  libboost-filesystem-dev:ppc64el libboost-program-options-dev:ppc64el \
+                  libboost-iostreams-dev:ppc64el libboost-test-dev:ppc64el \
+                  libboost-date-time-dev:ppc64el \
+                  libuv1-dev:ppc64el libssl-dev:ppc64el zlib1g-dev:ppc64el \
+                  libunbound-dev:ppc64el libcap-ng-dev:ppc64el
+                CC=powerpc64le-linux-gnu-gcc
+                CXX=powerpc64le-linux-gnu-g++
+                HOST_FLAG="--host=powerpc64le-linux-gnu"
+                CMAKE_EXTRA="-DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=ppc64le"
+                MULTIARCH_LIBDIR="/usr/lib/powerpc64le-linux-gnu"
+              else
+                apt-get update && apt-get install -y --no-install-recommends \
+                  build-essential \
+                  autoconf automake libtool pkg-config cmake git ca-certificates \
+                  default-jdk maven python3 \
+                  libboost-dev libboost-system-dev libboost-filesystem-dev \
+                  libboost-program-options-dev libboost-iostreams-dev \
+                  libboost-test-dev libboost-date-time-dev \
+                  libuv1-dev rapidjson-dev libssl-dev zlib1g-dev \
+                  libunbound-dev libcap-ng-dev
+                CC=gcc
+                CXX=g++
+                HOST_FLAG=""
+                CMAKE_EXTRA=""
+                MULTIARCH_LIBDIR=""
+              fi
+
+              git clone --depth 1 --branch v${OVS_VERSION} \
+                https://github.com/openvswitch/ovs.git /build/ovs
+              cp -a /src /build/opflex
+              git clone --depth 1 \
+                https://github.com/noironetworks/3rdparty-debian.git /build/3rdparty-debian
+              git clone --depth 1 -b v1.0.1 \
+                https://github.com/jupp0r/prometheus-cpp.git /build/prometheus-cpp
+              cd /build/prometheus-cpp && git submodule init && git submodule update
+              git apply /build/3rdparty-debian/prometheus/prometheus-cpp.patch
+
+              find /build/opflex/agent-ovs -name "*.cpp" -o -name "*.h" | \
+                xargs sed -i "s/OFPCR12_ROLE_MASTER/OFPCR12_ROLE_PRIMARY/g; s/OFPCR12_ROLE_SLAVE/OFPCR12_ROLE_SECONDARY/g"
+
+              cd /build/ovs && ./boot.sh
+              cd /build/opflex/libopflex && ./autogen.sh
+              cd /build/opflex/agent-ovs && ./autogen.sh
+              cd /build/opflex/genie && mvn compile exec:java
+              cd /build/opflex/genie/target/libmodelgbp && bash autogen.sh
+
+              STAGE=/build/staging
+              mkdir -p ${STAGE}
+
+              cd /build/ovs
+              ./configure --prefix=/usr/local --with-pic ${HOST_FLAG} CC=${CC} CXX=${CXX}
+              make -j$(nproc)
+              make DESTDIR=${STAGE} install
+              ln -sfn /build/ovs/lib /build/ovs/include/openvswitch/lib
+              rm -f /build/ovs/lib/string.h /build/ovs/lib/stdio.h
+
+              cd /build/opflex/libopflex
+              PKG_CONFIG_PATH="${STAGE}/usr/local/lib/pkgconfig" \
+              LDFLAGS="-L${STAGE}/usr/local/lib" \
+              CPPFLAGS="-I${STAGE}/usr/local/include" \
+              ./configure --prefix=/usr/local ${HOST_FLAG} ${MULTIARCH_LIBDIR:+--with-boost-libdir=${MULTIARCH_LIBDIR}} CC=${CC} CXX=${CXX}
+              make -j$(nproc)
+              make DESTDIR=${STAGE} install
+
+              cd /build/opflex/genie/target/libmodelgbp
+              PKG_CONFIG_PATH="${STAGE}/usr/local/lib/pkgconfig" \
+              LDFLAGS="-L${STAGE}/usr/local/lib" \
+              CPPFLAGS="-I${STAGE}/usr/local/include" \
+              ./configure --prefix=/usr/local --disable-static ${HOST_FLAG} ${MULTIARCH_LIBDIR:+--with-boost-libdir=${MULTIARCH_LIBDIR}} CC=${CC} CXX=${CXX}
+              make -j$(nproc)
+              make DESTDIR=${STAGE} install
+
+              cd /build/prometheus-cpp
+              mkdir _build && cd _build
+              cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local \
+                -DCMAKE_C_COMPILER=${CC} -DCMAKE_CXX_COMPILER=${CXX} \
+                ${CMAKE_EXTRA} -DBUILD_SHARED_LIBS=ON -DENABLE_PUSH=OFF
+              make -j$(nproc)
+              make DESTDIR=${STAGE} install
+
+              sed -i "s|/usr/local/lib|${STAGE}/usr/local/lib|g" ${STAGE}/usr/local/lib/*.la
+
+              cd /build/opflex/agent-ovs
+              PKG_CONFIG_PATH="${STAGE}/usr/local/lib/pkgconfig" \
+              LDFLAGS="-L${STAGE}/usr/local/lib" \
+              CPPFLAGS="-isystem /build/ovs/include -isystem /build/ovs/lib -isystem /build/ovs/include/openvswitch -I${STAGE}/usr/local/include" \
+              CXXFLAGS="-g -O2 -Wno-error=dangling-reference" \
+              LIBS="-lopenvswitch" \
+              ./configure --prefix=/usr/local ${HOST_FLAG} ${MULTIARCH_LIBDIR:+--with-boost-libdir=${MULTIARCH_LIBDIR}} CC=${CC} CXX=${CXX}
+              make -j$(nproc)
+
+              if [ "${ARCH}" = "amd64" ]; then
+                echo "Running tests on amd64..."
+                LD_LIBRARY_PATH="${STAGE}/usr/local/lib:${LD_LIBRARY_PATH}" \
+                make check -j$(nproc) || { cat test-suite.log; exit 1; }
+              fi
+
+              make DESTDIR=${STAGE} install
+
+              find ${STAGE}/usr/local/lib -name "*.a" -delete
+              find ${STAGE}/usr/local/lib -name "*.la" -delete
+              rm -rf ${STAGE}/usr/local/include ${STAGE}/usr/local/share \
+                ${STAGE}/usr/local/lib/pkgconfig
+              rm -f ${STAGE}/usr/local/bin/ovs-* ${STAGE}/usr/local/bin/ovsdb-*
+              rm -rf ${STAGE}/usr/local/sbin ${STAGE}/usr/local/var \
+                ${STAGE}/usr/local/etc
+
+              cd ${STAGE}
+              tar czf /output/opflex-binaries-${ARCH}.tar.gz usr/local
+            '
+          ls -la opflex-binaries/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: opflex-binaries-${{ matrix.arch }}
+          path: opflex-binaries/*.tar.gz
+          retention-days: 5
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:10}"
+          TAG="opflex/${SHORT_SHA}"
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "OpFlex binaries ${SHORT_SHA}" \
+            --notes "OpFlex binaries built from ${GITHUB_SHA} (OVS ${{ env.OVS_VERSION }})" \
+            artifacts/opflex-binaries-amd64/*.tar.gz \
+            artifacts/opflex-binaries-ppc64le/*.tar.gz
+
+      - name: Cleanup old releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName -q '.[].tagName' | \
+            grep '^opflex/' | tail -n +11 | \
+            while read -r tag; do
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+            done

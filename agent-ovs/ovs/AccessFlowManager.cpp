@@ -926,7 +926,14 @@ void AccessFlowManager::handleSecGrpSetUpdate(const uri_set_t& secGrps,
             }
 
             if (pc->getLog()) {
-                log = pc->getLog();
+                log = true;
+            } else if (agent.getExtraConfigManager().isSgLogEnabled(secGrp)) {
+                auto& ecm = agent.getExtraConfigManager();
+                if (act == flowutils::CA_DENY && ecm.isSgLogDropsEnabled()) {
+                    log = true;
+                } else if (act != flowutils::CA_DENY && ecm.isSgLogPermitsEnabled()) {
+                    log = true;
+                }
             }
             /*
              * Do not program higher level protocols

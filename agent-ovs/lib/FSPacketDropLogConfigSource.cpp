@@ -269,8 +269,38 @@ void FSPacketDropLogConfigSource::updated(const fs::path& filePath) {
                 }
             }
             dropPruneCfgSet = std::move(newPruneSet);
+
+            const std::string LOG_SGS("log-sgs");
+            const std::string LOG_PERMITS("log-permits");
+            const std::string LOG_DROPS("log-drops");
+            const std::string RATE_LIMIT("rate-limit");
+            const std::string BURST_LIMIT("burst-limit");
+
+            std::unordered_set<opflex::modb::URI> newLogSgs;
+            if(properties.get_child_optional(LOG_SGS)) {
+                for (auto& child : properties.get_child(LOG_SGS)) {
+                    string sgUri = child.second.get_value<string>();
+                    if(!sgUri.empty()) {
+                        newLogSgs.insert(opflex::modb::URI(sgUri));
+                    }
+                }
+            }
+
+            bool logPermits = properties.get<bool>(LOG_PERMITS, true);
+            bool logDrops = properties.get<bool>(LOG_DROPS, true);
+            uint32_t rateLimit = properties.get<uint32_t>(RATE_LIMIT, 0);
+            uint32_t burstLimit = properties.get<uint32_t>(BURST_LIMIT, 0);
+
+            manager->sgLogConfigUpdated(newLogSgs, logPermits, logDrops,
+                                        rateLimit, burstLimit);
+
             LOG(INFO) << "Updated packet drop log config "
-                      << " from " << filePath;
+                      << " from " << filePath
+                      << " log-sgs=" << newLogSgs.size()
+                      << " permits=" << logPermits
+                      << " drops=" << logDrops
+                      << " rate=" << rateLimit
+                      << " burst=" << burstLimit;
         } else if (isPacketDropFlowConfig(filePath)) {
             using boost::asio::ip::address;
             string pathStr = filePath.string();
